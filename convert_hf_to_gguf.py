@@ -4908,7 +4908,7 @@ class JaisModel(Model):
     def get_vocab_base_pre(self, tokenizer) -> str:
         # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
         # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
-        return "gpt2"
+        return "gpt-2"
 
     def set_vocab(self):
         self._set_vocab_gpt2()
@@ -5399,7 +5399,7 @@ class BailingMoeV2Model(Model):
     def get_vocab_base_pre(self, tokenizer) -> str:
         # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
         # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
-        return "gpt2"
+        return "gpt-2"
 
     def set_vocab(self):
         self._set_vocab_gpt2()
@@ -5797,7 +5797,7 @@ class Hy3Model(Model):
     def get_vocab_base_pre(self, tokenizer) -> str:
         # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
         # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
-        return "gpt2"
+        return "gpt-2"
 
     def set_vocab(self):
         self._set_vocab_gpt2()

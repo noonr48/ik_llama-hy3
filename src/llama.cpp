@@ -7711,6 +7711,7 @@ enum llama_rope_type llama_rope_type(const struct llama_model * model) {
         case LLM_ARCH_NOMIC_BERT:
         case LLM_ARCH_STABLELM:
         case LLM_ARCH_GLM4_MOE:
+        case LLM_ARCH_HY_V3:
         case LLM_ARCH_BITNET:
         case LLM_ARCH_BITNET_25:
         case LLM_ARCH_BITNET_B158:

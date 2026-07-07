@@ -125,6 +125,7 @@ struct create_tensors_helper : public create_tensors_helper_interface {
     bool create_glm4_tensors(const LLM_TN & tn);
 
     bool create_glm4_moe_tensors(const LLM_TN & tn);
+    bool create_hy3_tensors(const LLM_TN & tn);
 
     bool create_bitnet_tensors(const LLM_TN & tn);
 
@@ -182,7 +183,7 @@ struct create_tensors_helper : public create_tensors_helper_interface {
     inline ggml_context * ctx_for_layer_split(int i) const {
         const bool is_mtp_layer = model.hparams.nextn_predict_layers > 0 &&
                                   static_cast<uint32_t>(i) >= model.hparams.n_layer - model.hparams.nextn_predict_layers;
-        const bool mtp_can_use_graph_split = model.arch == LLM_ARCH_GLM4_MOE || model.arch == LLM_ARCH_QWEN35;
+        const bool mtp_can_use_graph_split = model.arch == LLM_ARCH_GLM4_MOE || model.arch == LLM_ARCH_HY_V3 || model.arch == LLM_ARCH_QWEN35;
         return is_mtp_layer && !mtp_can_use_graph_split ? ctx_map.at(model.buft_layer[i].buft) : ctx_map.at(model.buft_layer[i].buft_matrix);
     }
 
@@ -2870,6 +2871,99 @@ bool create_tensors_helper::create_glm_dsa_tensors(const LLM_TN & tn) {
     return use_mmap_buffer;
 }
 
+bool create_tensors_helper::create_hy3_tensors(const LLM_TN & tn) {
+    LOADING_PRELUDE
+
+    const int64_t n_expert_shared = hparams.n_expert_shared;
+
+    GGML_ASSERT(hparams.n_expert > 0 && "n_expert must be > 0 for HY_V3 MoE layers");
+    GGML_ASSERT(hparams.n_expert_used > 0 && "n_expert_used must be > 0 for HY_V3 MoE layers");
+
+    create_embd_output(tn, n_embd, n_vocab, true);
+
+    for (int i = 0; i < n_layer; ++i) {
+        ggml_context * ctx_layer = ctx_for_layer(i);
+        ggml_context * ctx_split = ctx_for_layer_split(i);
+
+        const bool is_mtp_layer = hparams.nextn_predict_layers > 0 &&
+                                  static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers;
+
+        int flags = 0;
+        if (!model.mtp) {
+            if (is_mtp_layer) {
+                flags |= llama_model_loader::TENSOR_SKIP;
+            }
+        }
+
+        auto & layer = model.layers[i];
+
+        layer.attn_norm = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, flags);
+
+        // HY_V3 attention: NO bias terms (unlike GLM4_MOE)
+        if (!flags) {
+            use_mmap_buffer &= !merge_qkv(tn, i, 0);  // bias=0 means no bias
+        } else {
+            layer.wq = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q, "weight", i), { n_embd, n_embd_head_k * n_head }, flags);
+            layer.wk = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K, "weight", i), { n_embd, n_embd_k_gqa }, flags);
+            layer.wv = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V, "weight", i), { n_embd, n_embd_v_gqa }, flags);
+        }
+
+        layer.wo = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT, "weight", i), { n_embd_head_k * n_head, n_embd }, flags);
+
+        // Q/K norm
+        layer.attn_q_norm = create_tensor(ctx_split,
+                tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, llama_model_loader::TENSOR_NOT_REQUIRED | flags);
+        layer.attn_k_norm = create_tensor(ctx_split,
+                tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, llama_model_loader::TENSOR_NOT_REQUIRED | flags);
+
+        auto ffn_ctx = model.split_mode == LLAMA_SPLIT_MODE_GRAPH ? ctx_split : ctx_layer;
+
+        // HY_V3 uses ffn_norm (post-attention norm) - same tensor name mapping as GLM4_MOE
+        layer.ffn_norm = create_tensor(ffn_ctx, tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, flags);
+
+        const bool use_moe = (static_cast<uint32_t>(i) >= hparams.n_layer_dense_lead);
+
+        if (use_moe) {
+            // MoE layers
+            layer.ffn_gate_inp = create_tensor(ffn_ctx, tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), { n_embd, n_expert }, flags);
+            layer.ffn_exp_probs_b = create_tensor(ffn_ctx, tn(LLM_TENSOR_FFN_EXP_PROBS_B, i), { n_expert }, flags);
+
+            // MoE branch
+            use_mmap_buffer &= !create_std_ffn_exps(n_embd, tn, i, flags, 0, ffn_ctx);
+
+            // Shared expert
+            if (n_expert_shared > 0) {
+                const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
+                const int64_t n_ff_shexp = n_ff_exp * n_expert_shared;
+                layer.ffn_gate_shexp     = create_tensor(ffn_ctx,
+                        tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), { n_embd, n_ff_shexp }, flags);
+                layer.ffn_down_shexp = create_tensor(ffn_ctx,
+                        tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), { n_ff_shexp, n_embd }, flags);
+                layer.ffn_up_shexp = create_tensor(ffn_ctx,
+                        tn(LLM_TENSOR_FFN_UP_SHEXP, "weight", i), { n_embd, n_ff_shexp }, flags);
+            }
+        } else {
+            // Dense layer (layer 0)
+            layer.ffn_gate = create_tensor(ffn_ctx, tn(LLM_TENSOR_FFN_GATE, "weight", i), { n_embd, n_ff }, flags);
+            layer.ffn_down = create_tensor(ffn_ctx, tn(LLM_TENSOR_FFN_DOWN, "weight", i), { n_ff, n_embd }, flags);
+            layer.ffn_up   = create_tensor(ffn_ctx, tn(LLM_TENSOR_FFN_UP,   "weight", i), { n_embd, n_ff }, flags);
+        }
+
+        // --- NextN / MTP tensors on the final layer ---
+        if (is_mtp_layer) {
+            layer.nextn.eh_proj = create_tensor(ctx_split, tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", i), {n_embd * 2, n_embd}, flags);
+
+            // Shared head norm
+            layer.nextn.shared_head_norm = create_tensor(ctx_layer, tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), {n_embd}, flags);
+
+            layer.nextn.enorm = create_tensor(ctx_layer, tn(LLM_TENSOR_NEXTN_ENORM, "weight", i), {n_embd}, flags);
+            layer.nextn.hnorm = create_tensor(ctx_layer, tn(LLM_TENSOR_NEXTN_HNORM, "weight", i), {n_embd}, flags);
+        }
+    }
+
+    return use_mmap_buffer;
+}
+
 bool create_tensors_helper::create_glm4_moe_tensors(const LLM_TN & tn) {
     LOADING_PRELUDE
 
@@ -4516,6 +4610,8 @@ bool create_tensors_helper::create_tensors() {
             use_mmap_buffer = create_glm_dsa_tensors(tn); break;
         case LLM_ARCH_GLM4_MOE:
             use_mmap_buffer = create_glm4_moe_tensors(tn); break;
+        case LLM_ARCH_HY_V3:
+            use_mmap_buffer = create_hy3_tensors(tn); break;
         case LLM_ARCH_BITNET:
             use_mmap_buffer = create_bitnet_tensors(tn); break;
         case LLM_ARCH_BITNET_B158:

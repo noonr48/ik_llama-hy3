@@ -908,7 +908,7 @@ ggml_tensor * llm_build_context::llm_build_ffn(
             }
             cur = llm_build_lora_mm(lctx, ctx, split_d, cur);
             cb(cur, "ffn_down", il_cb);
-            if (lctx.model.arch == LLM_ARCH_GLM4 || lctx.model.arch == LLM_ARCH_GLM4_MOE) {
+            if (lctx.model.arch == LLM_ARCH_GLM4 || (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) {
                 // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
                 ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
             }
@@ -970,7 +970,7 @@ ggml_tensor * llm_build_context::llm_build_ffn(
         if (down) {
             cur = llm_build_lora_mm(lctx, ctx, down, cur);
             cb(cur, "ffn_down", il);
-            if (lctx.model.arch == LLM_ARCH_GLM4 || lctx.model.arch == LLM_ARCH_GLM4_MOE) {
+            if (lctx.model.arch == LLM_ARCH_GLM4 || (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) {
                 // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
                 ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
             }
@@ -1108,7 +1108,7 @@ ggml_tensor * llm_build_context::llm_build_ffn(
 
     if (down) {
         cur = llm_build_lora_mm(lctx, ctx, down, cur);
-        if (lctx.model.arch == LLM_ARCH_GLM4 || lctx.model.arch == LLM_ARCH_GLM4_MOE) {
+        if (lctx.model.arch == LLM_ARCH_GLM4 || (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
         }
@@ -1755,7 +1755,7 @@ static ggml_tensor * llm_build_kqv(
                                   || model.arch == LLM_ARCH_COHERE2_MOE
                                   || model.arch == LLM_ARCH_COMMAND_R
                                   || model.arch == LLM_ARCH_GLM4
-                                  || model.arch == LLM_ARCH_GLM4_MOE
+                                  || (model.arch == LLM_ARCH_GLM4_MOE || model.arch == LLM_ARCH_HY_V3)
                                   || model.arch == LLM_ARCH_LAGUNA
                                   || model.arch == LLM_ARCH_MIMO2;
                                // || (model.arch == LLM_ARCH_DEEPSEEK2 && q->ne[1] <= 8);
@@ -1896,7 +1896,7 @@ static ggml_tensor * llm_build_kqv(
                 auto q_i = ggml_view_3d(ctx, q, q->ne[0], q->ne[1], this_ne12, q->nb[1], q->nb[2], q->nb[2]*i12);
                 auto kq_i = ggml_mul_mat(ctx, k_i, q_i);
                 if (model.arch == LLM_ARCH_PHI2 || model.arch == LLM_ARCH_PHI3 || model.arch == LLM_ARCH_GPTNEOX || model.arch == LLM_ARCH_QWEN2 ||
-                    model.arch == LLM_ARCH_COHERE2 || model.arch == LLM_ARCH_COHERE2_MOE || model.arch == LLM_ARCH_COMMAND_R || model.arch == LLM_ARCH_GLM4 || model.arch == LLM_ARCH_GLM4_MOE) {
+                    model.arch == LLM_ARCH_COHERE2 || model.arch == LLM_ARCH_COHERE2_MOE || model.arch == LLM_ARCH_COMMAND_R || model.arch == LLM_ARCH_GLM4 || (model.arch == LLM_ARCH_GLM4_MOE || model.arch == LLM_ARCH_HY_V3)) {
                     ggml_mul_mat_set_prec(kq_i, GGML_PREC_F32);
                 }
                 if (model.arch == LLM_ARCH_GROK) {
@@ -1928,7 +1928,7 @@ static ggml_tensor * llm_build_kqv(
 
     if (wo) {
         cur = llm_build_context::llm_build_lora_mm(lctx, ctx, wo, cur);
-        if (lctx.model.arch == LLM_ARCH_GLM4 || lctx.model.arch == LLM_ARCH_GLM4_MOE) {
+        if (lctx.model.arch == LLM_ARCH_GLM4 || (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
         }
@@ -2257,7 +2257,7 @@ ggml_tensor * llm_build_context::build_output(llama_context & lctx, ggml_context
         if (idx_out >= 0) idx = idx_out;
         const bool is_qwen_mtp = (lctx.model.arch == LLM_ARCH_QWEN35 ||
                                   lctx.model.arch == LLM_ARCH_QWEN35MOE ||
-                                  lctx.model.arch == LLM_ARCH_GLM4_MOE) && lctx.cparams.mtp;
+                                  (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) && lctx.cparams.mtp;
         if (cur->op == GGML_OP_REDUCE && cur->src[idx] && !is_qwen_mtp) {
             // avoid copy to main GPU
             cur->view_src = cur->src[idx];
@@ -2784,7 +2784,7 @@ ggml_tensor * llm_build_context::build_std_attention(ggml_cgraph * gf, ggml_tens
                                   || model.arch == LLM_ARCH_COHERE2_MOE
                                   || model.arch == LLM_ARCH_COMMAND_R
                                   || model.arch == LLM_ARCH_GLM4
-                               //   || model.arch == LLM_ARCH_GLM4_MOE
+                               //   || (model.arch == LLM_ARCH_GLM4_MOE || model.arch == LLM_ARCH_HY_V3)
                                   || model.arch == LLM_ARCH_MIMO2;
                                // || (model.arch == LLM_ARCH_DEEPSEEK2 && q->ne[1] <= 8);
 
@@ -3028,7 +3028,7 @@ ggml_tensor * llm_build_context::build_std_attention(ggml_cgraph * gf, ggml_tens
                 }
 
                 cur = llm_build_lora_mm(lctx, ctx0, split_wo, cur);
-                if (lctx.model.arch == LLM_ARCH_GLM4 || lctx.model.arch == LLM_ARCH_GLM4_MOE) {
+                if (lctx.model.arch == LLM_ARCH_GLM4 || (lctx.model.arch == LLM_ARCH_GLM4_MOE || lctx.model.arch == LLM_ARCH_HY_V3)) {
                     // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
                     ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
                 }
