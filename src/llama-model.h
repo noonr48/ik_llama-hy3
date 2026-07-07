@@ -124,6 +124,7 @@ enum e_model {
     MODEL_310B_A15B,
     MODEL_300B_A47B, // Ernie MoE big
     MODEL_355B_A32B,
+    MODEL_295B_A21B, // Hy3
     MODEL_397B_A17B, // Qwen-3.5-MoE
     MODEL_744B_A40B,
     MODEL_E2B,

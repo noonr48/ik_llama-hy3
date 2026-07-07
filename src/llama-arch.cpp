@@ -56,6 +56,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_CHATGLM,         "chatglm"      },
     { LLM_ARCH_GLM4,            "glm4"         },
     { LLM_ARCH_GLM4_MOE,        "glm4moe"      },
+    { LLM_ARCH_HY_V3,           "hy_v3"        },
     { LLM_ARCH_BITNET,          "bitnet"       },
     { LLM_ARCH_BITNET_25,       "bitnet-25"    },
     { LLM_ARCH_BITNET_B158,     "bitnet-b1.58" },

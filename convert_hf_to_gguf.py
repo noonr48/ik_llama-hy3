@@ -4905,6 +4905,11 @@ class JaisModel(Model):
 
         self.max_alibi_bias = 8.0
 
+    def get_vocab_base_pre(self, tokenizer) -> str:
+        # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
+        # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
+        return "gpt2"
+
     def set_vocab(self):
         self._set_vocab_gpt2()
 
@@ -5391,6 +5396,11 @@ class BailingMoeV2Model(Model):
             self.block_count = self.hparams["num_hidden_layers"] + nextn_layers
             self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
 
+    def get_vocab_base_pre(self, tokenizer) -> str:
+        # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
+        # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
+        return "gpt2"
+
     def set_vocab(self):
         self._set_vocab_gpt2()
 
@@ -5773,6 +5783,99 @@ def split_str_to_n_bytes(split_str: str) -> int:
         raise ValueError(f"Invalid split size: {split_str}, must be positive")
 
     return n
+
+
+@Model.register("HYV3ForCausalLM")
+class Hy3Model(Model):
+    model_arch = gguf.MODEL_ARCH.HY_V3
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_count = self.hparams["num_hidden_layers"] + self.hparams.get("num_nextn_predict_layers", 0)
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def get_vocab_base_pre(self, tokenizer) -> str:
+        # Hy3 uses a custom BPE pretokenizer not yet registered in the hash table
+        # Return "gpt2" as a fallback (same behavior as default GPT-2 BPE)
+        return "gpt2"
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        h = self.hparams
+        rope_dim = h.get("head_dim") or (h["hidden_size"] // h["num_attention_heads"])
+        self.gguf_writer.add_rope_dimension_count(int(rope_dim))
+
+        if "num_experts" in h:
+            self.gguf_writer.add_expert_count(h["num_experts"])
+        if "moe_intermediate_size" in h:
+            self.gguf_writer.add_expert_feed_forward_length(h["moe_intermediate_size"])
+        if "num_shared_experts" in h:
+            self.gguf_writer.add_expert_shared_count(h["num_shared_experts"])
+        if "first_k_dense_replace" in h:
+            self.gguf_writer.add_leading_dense_block_count(h["first_k_dense_replace"])
+
+        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+
+        if "router_scaling_factor" in h:
+            self.gguf_writer.add_expert_weights_scale(h["router_scaling_factor"])
+
+        if "num_nextn_predict_layers" in h:
+            self.gguf_writer.add_nextn_predict_layers(h["num_nextn_predict_layers"])
+
+    _experts = None
+
+    def modify_tensors(self, data_torch, name, bid):
+        # Token embedding
+        if name == "model.embed_tokens.weight":
+            return [(self.map_tensor_name("token_embd.weight"), data_torch)]
+
+        # Routed experts: model.layers.N.mlp.experts.{X}.{gate,up,down}_proj.weight
+        if "mlp.experts." in name:
+            n_experts = self.hparams["num_experts"]
+            assert bid is not None
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+            self._experts[bid][name] = data_torch
+            if len(self._experts[bid]) >= n_experts * 3:
+                tensors = []
+                for w_name in ["down_proj", "gate_proj", "up_proj"]:
+                    datas = []
+                    for xid in range(n_experts):
+                        ename = "model.layers.%d.mlp.experts.%d.%s.weight" % (bid, xid, w_name)
+                        datas.append(self._experts[bid][ename])
+                        del self._experts[bid][ename]
+                    merged = torch.stack(datas, dim=0)
+                    merged_name = "model.layers.%d.mlp.experts.%s.weight" % (bid, w_name)
+                    new_name = self.map_tensor_name(merged_name)
+                    tensors.append((new_name, merged))
+                return tensors
+            else:
+                return []
+
+        # Rename Hy3-specific tensor names to standard GGUF names
+        # Router gate
+        name = name.replace("mlp.router.gate.weight", "mlp.gate_proj.weight")
+        # Expert bias (Hy3: mlp.expert_bias -> bailingmoe2 pattern: mlp.gate.e_score_correction)
+        name = name.replace("mlp.expert_bias", "mlp.gate.e_score_correction")
+        # Shared expert (Hy3: mlp.shared_mlp -> standard: mlp.shared_expert)
+        name = name.replace("mlp.shared_mlp.", "mlp.shared_expert.")
+        # MTP final layernorm -> shared_head.norm
+        name = name.replace("final_layernorm", "shared_head.norm")
+        # Note: input_layernorm, post_attention_layernorm, self_attn.{q,k,v,o}_proj,
+        # self_attn.{q,k}_norm, eh_proj, enorm, hnorm all map directly via standard HF names
+
+        new_name = self.map_tensor_name(name)
+        return [(new_name, data_torch)]
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+        if self._experts is not None:
+            experts = [k for d in self._experts for k in d.keys()]
+            if len(experts) > 0:
+                raise ValueError("Unprocessed experts: %s" % experts)
 
 
 def main() -> None:
