@@ -154,6 +154,16 @@ For contexts that exceed GPU VRAM, use `--no-kv-offload` to spill KV cache to sy
   --spec-type mtp:n_max=1,p_min=0.0
 ```
 
+### Graph Split (Multi-GPU)
+
+Hy3 at IQ4_NL is ~158 GB — too large for a single GPU. Use `-sm graph` to split the computation graph across all available GPUs automatically:
+
+```
+-sm graph
+```
+
+This distributes layers across GPUs based on available VRAM. If you have a single GPU with enough VRAM (~160 GB+), you can omit this flag.
+
 ### MTP Speculative Decoding
 
 Hy3 includes a built-in MTP layer (block 80, NextN architecture). Enable it with:
