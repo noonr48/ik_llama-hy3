@@ -2440,10 +2440,97 @@ static json common_chat_extra_context() {
     return ctx;
 }
 
+
+// Hy3 (hy_v3) - Tencent Hy3 MoE model with custom thinking tokens
+// Uses <think:opensource> and </think:opensource> instead of standard <think></think>
+// Also supports tool calls with <tool_calls:opensource> format
+static common_chat_params common_chat_params_init_hy3(const common_chat_template &    tmpl,
+                                                       const autoparser::generation_params & inputs) {
+    common_chat_params data;
+
+    data.prompt             = common_chat_template_direct_apply_impl(tmpl, inputs);
+    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking  = true;
+
+    const std::string THINK_START = "<think:opensource>";
+    const std::string THINK_END   = "</think:opensource>";
+
+    data.thinking_start_tag = THINK_START;
+    data.thinking_end_tag   = THINK_END;
+    data.preserved_tokens  = {
+        THINK_START,
+        THINK_END,
+        "<tool_calls:opensource>",
+        "</tool_calls:opensource>",
+        "<tool_call:opensource>",
+        "</tool_call:opensource>",
+        "<tool_sep:opensource>",
+        "<arg_key:opensource>",
+        "</arg_key:opensource>",
+        "<arg_value:opensource>",
+        "</arg_value:opensource>",
+        "<｜hy_begin_of_sentence:opensource｜>",
+        "<｜hy_User:opensource｜>",
+        "<｜hy_Assistant:opensource｜>",
+        "<｜reasoning_mode:opensource｜>",
+    };
+
+    auto extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE && inputs.enable_thinking;
+
+    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+        auto end = p.end();
+        auto gp = inputs.generation_prompt;
+
+        // Detect mode from generation prompt suffix:
+        // - High/Low mode: gp ends with "<think:opensource>" (open tag)
+        // - No_think mode: gp ends with "</think:opensource>" (closed tag)
+        bool think_already_open = !gp.empty() && gp.size() >= THINK_START.size() &&
+            gp.substr(gp.size() - THINK_START.size()) == THINK_START;
+
+        // Only extract reasoning when think tag is already open (high/low mode).
+        bool do_extract = extract_reasoning && think_already_open;
+
+        LOG_INF("Hy3 parser: extract_reasoning=%d think_already_open=%d do_extract=%d gp_len=%zu gp_ends=%s\n",
+                (int)extract_reasoning, (int)think_already_open, (int)do_extract,
+                gp.size(),
+                gp.size() >= 20 ? gp.substr(gp.size()-20).c_str() : gp.c_str());
+
+        if (do_extract) {
+            // High/Low mode: gp already opened <think:opensource>.
+            // Model output: {reasoning}</think:opensource>{content}
+            auto generation_prompt = p.prefix(gp);
+            auto reasoning = p.reasoning(p.until(THINK_END)) + p.literal(THINK_END);
+            return generation_prompt + reasoning + p.content(p.rest()) + end;
+        } else {
+            // No_think mode or reasoning disabled: everything is content.
+            auto generation_prompt = p.prefix(gp);
+            return generation_prompt + p.content(p.rest()) + end;
+        }
+    });
+    data.parser = parser.save();
+
+    return data;
+}
+
 std::optional<common_chat_params> common_chat_try_specialized_template(
         const common_chat_template &          tmpl,
         const std::string &                   src,
         autoparser::generation_params & params) {
+    // Hy3 (hy_v3) - Tencent Hy3 MoE with custom thinking tokens <think:opensource></think:opensource>
+    // The Jinja template constructs tokens via concatenation: '<think' ~ HYTK ~ '>'
+    // where HYTK = ':opensource'. Detect by the unique HYTK variable + hy_eos pattern.
+    LOG_INF("Hy3 detection: src has HYTK=%d hy_eos=%d think_begin_token=%d src_len=%zu\n",
+            (int)(src.find("HYTK") != std::string::npos),
+            (int)(src.find("hy_eos") != std::string::npos),
+            (int)(src.find("think_begin_token") != std::string::npos),
+            src.size());
+    if (src.find("HYTK") != std::string::npos &&
+        src.find("hy_eos") != std::string::npos &&
+        src.find("think_begin_token") != std::string::npos) {
+        LOG_INF("Using specialized template: Hy3 (hy_v3)\n");
+        return common_chat_params_init_hy3(tmpl, params);
+    }
+
     // Ministral/Mistral Large 3 - uses special reasoning structure fixes, can't use autoparser
     // Note: Mistral Small 3.2 uses [CALL_ID] which Ministral doesn't have, so we can distinguish them
     if (src.find("[SYSTEM_PROMPT]") != std::string::npos && src.find("[TOOL_CALLS]") != std::string::npos &&
@@ -2598,12 +2685,14 @@ static common_chat_params common_chat_templates_apply_jinja(const struct common_
         workaround::func_args_not_string(params.messages);
     }
 
-    params.generation_prompt = common_chat_templates_generation_prompt(tmpl, params);
-
+    // Populate extra_context BEFORE computing generation_prompt so that
+    // chat_template_kwargs (e.g. reasoning_effort) are available to the template.
     params.extra_context = common_chat_extra_context();
     for (auto el : inputs.chat_template_kwargs) {
         params.extra_context[el.first] = json::parse(el.second);
     }
+
+    params.generation_prompt = common_chat_templates_generation_prompt(tmpl, params);
 
     if (!inputs.json_schema.empty()) {
         params.json_schema = json::parse(inputs.json_schema);

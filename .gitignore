@@ -162,3 +162,5 @@ a.out
 a.out.*
 .dev
 .github
+convert_hf_to_gguf.py.bak
+src/graphs/_removed/
