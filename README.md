@@ -29,16 +29,14 @@ Tencent Hy3 is a 295B MoE model (8 active experts out of 192 per layer) with:
 | KV cache on GPU (32K context) | ✅ | ~35-46 tok/s generation |
 | `--flash-attn on` | ✅ | Required for correct attention with this architecture |
 | `--override-kv tokenizer.ggml.eos_token_id` | ✅ | GGUF metadata has wrong eos_id (3), correct is 120025 |
-| CUDA compute on sm_86 (RTX 3090) | ✅ | |
-| CUDA compute on sm_120 (RTX 5060 Ti) | ✅ | |
+| NVIDIA CUDA (multiple GPU architectures) | ✅ | Build with `-DCMAKE_CUDA_ARCHITECTURES` matching your GPUs |
 
 ### Tested with Caveats
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| KV cache on CPU (`--no-kv-offload`, 200K context) | ⚠️ | Works but slow on large prompts (~5 tok/s at 3K+ prompt tokens). Small prompts ~20 tok/s. Acceptable for batch, not interactive. |
-| MTP with `n_max=2` | ⚠️ | Works but causes CUDA OOM on 3K+ prompts (24GB GPUs). Slower than `n_max=1` due to lower acceptance rate (62.5% vs 69-80%). Not recommended. |
-| MTP with `--ubatch-size 512` | ⚠️ | Works for small prompts but OOMs on large prompts with MTP active. Use `--ubatch-size 256`. |
+| KV cache on CPU (`--no-kv-offload`, 200K context) | ⚠️ | Works but slow on large prompts. Acceptable for batch processing, not interactive use. |
+| MTP with `n_max=2` | ⚠️ | Lower acceptance rate than `n_max=1` (62.5% vs 69-80%) and higher memory usage. `n_max=1` is recommended. |
 
 ### Not Tested
 
@@ -101,10 +99,11 @@ cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF
 cmake --build build --target llama-server -j$(nproc)
 ```
 
-Recommended CUDA arch flags for mixed GPU fleets:
+Set `CMAKE_CUDA_ARCHITECTURES` to match your GPU compute capabilities. For example, for sm_86 (RTX 3090) and sm_120 (RTX 5060 Ti):
 ```bash
-cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;120" ...
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;120" -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF ...
 ```
+Use whatever compute capability numbers match your hardware — check with `nvidia-smi --query-gpu=compute_cap --format=csv`.
 
 ### Serve (32K context, all-GPU KV, with MTP)
 
@@ -117,7 +116,7 @@ cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;120" ...
   --override-kv tokenizer.ggml.eos_token_id=int:120025 \
   --ctx-size 32768 --batch-size 512 --ubatch-size 256 \
   --flash-attn on --cache-type-k f16 --cache-type-v f16 \
-  --jinja --chat-template-file hy3_chat_template.jinja \
+  --jinja --chat-template-file models/templates/Hy3.jinja \
   --reasoning-format deepseek --reasoning on \
   --spec-type mtp:n_max=1,p_min=0.0
 ```
@@ -135,7 +134,7 @@ For large context that exceeds GPU VRAM. Significantly slower on large prompts:
   --override-kv tokenizer.ggml.eos_token_id=int:120025 \
   --ctx-size 200000 --batch-size 512 --ubatch-size 256 \
   --flash-attn on --cache-type-k f16 --cache-type-v f16 \
-  --jinja --chat-template-file hy3_chat_template.jinja \
+  --jinja --chat-template-file models/templates/Hy3.jinja \
   --reasoning-format deepseek --reasoning on \
   --spec-type mtp:n_max=1,p_min=0.0
 ```
@@ -149,7 +148,7 @@ Hy3 includes a built-in MTP layer (block 80, NextN architecture). Enable it with
 ```
 
 - `n_max=1` is recommended (1 draft token per step, 69-80% acceptance)
-- `n_max=2` causes OOM on 24GB GPUs with large prompts and is slower
+- `n_max=2` has lower acceptance and higher memory usage; `n_max=1` is recommended
 - The old `-mtp` flag is deprecated; use `--spec-type`
 
 ## Credits
