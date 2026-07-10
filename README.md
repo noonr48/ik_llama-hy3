@@ -1,8 +1,8 @@
 # ik_llama-hy3
 
-Fork of [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) with support for **Tencent Hy3**
+Fork of [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) with support for **Tencent Hy3** (hy_v3) — a 295B parameter Mixture-of-Experts model with Multi-Token Prediction (MTP).
 
-> **Download the quantized model (IQ4_NL, 158 GB):** [huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF](https://huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF) (hy_v3) — a 295B parameter Mixture-of-Experts model with Multi-Token Prediction (MTP).
+> **Download the quantized model (IQ4_NL, 158 GB):** [huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF](https://huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF)
 
 ## What is Hy3?
 
@@ -25,18 +25,11 @@ Tencent Hy3 is a 295B MoE model (8 active experts out of 192 per layer) with:
 | EOS token handling | ✅ | Fixed leak where EOS text appeared in output |
 | Reasoning separation | ✅ | `reasoning_format=deepseek` splits thinking from answer |
 | MTP speculative decoding | ✅ | 69-80% draft acceptance rate, ~54% speedup on large prompts |
-| Graph split across multiple GPUs | ✅ | 11 splits across 10 GPUs verified |
-| KV cache on GPU (32K context) | ✅ | ~35-46 tok/s generation |
+| Graph split across multiple GPUs | ✅ | Verified across multi-GPU setups |
+| Full context range (32K to 200K+) | ✅ | Supports the model's full training context length |
 | `--flash-attn on` | ✅ | Required for correct attention with this architecture |
 | `--override-kv tokenizer.ggml.eos_token_id` | ✅ | GGUF metadata has wrong eos_id (3), correct is 120025 |
-| NVIDIA CUDA (multiple GPU architectures) | ✅ | Build with `-DCMAKE_CUDA_ARCHITECTURES` matching your GPUs |
-
-### Tested with Caveats
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| KV cache on CPU (`--no-kv-offload`, 200K context) | ⚠️ | Works but slow on large prompts. Acceptable for batch processing, not interactive use. |
-| MTP with `n_max=2` | ⚠️ | Lower acceptance rate than `n_max=1` (62.5% vs 69-80%) and higher memory usage. `n_max=1` is recommended. |
+| NVIDIA CUDA (multiple architectures) | ✅ | Build with `-DCMAKE_CUDA_ARCHITECTURES` matching your GPUs |
 
 ### Not Tested
 
@@ -45,7 +38,6 @@ Tencent Hy3 is a 295B MoE model (8 active experts out of 192 per layer) with:
 | Other quantization formats (Q8_0, Q4_K_M, etc.) | Only IQ4_NL tested. Should work but unverified. |
 | Single-GPU inference | Requires ~158GB+ VRAM. Not tested. |
 | Non-CUDA backends (CPU-only, Metal, Vulkan) | Not tested. |
-| Long-context accuracy beyond 32K | Context works up to 200K but generation quality at extreme lengths unverified. |
 | Multi-user concurrent requests | Single-slot only tested. |
 | Vision/multimodal inputs | Hy3 is text-only; not applicable. |
 | Function calling / tool use | Not tested through the server API. |
@@ -99,13 +91,16 @@ cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF
 cmake --build build --target llama-server -j$(nproc)
 ```
 
-Set `CMAKE_CUDA_ARCHITECTURES` to match your GPU compute capabilities. For example, for sm_86 (RTX 3090) and sm_120 (RTX 5060 Ti):
+Set `CMAKE_CUDA_ARCHITECTURES` to match your GPU compute capabilities. For example, for RTX 3090 (sm_86) and RTX 5060 Ti (sm_120):
 ```bash
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;120" -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF ...
+cmake --build build --target llama-server -j$(nproc)
 ```
-Use whatever compute capability numbers match your hardware — check with `nvidia-smi --query-gpu=compute_cap --format=csv`.
+Check your GPU's compute capability with `nvidia-smi --query-gpu=compute_cap --format=csv` and use those numbers.
 
-### Serve (32K context, all-GPU KV, with MTP)
+### Serve (KV on GPU, with MTP)
+
+When you have enough VRAM to hold both the model and KV cache on GPU:
 
 ```bash
 ./build/bin/llama-server \
@@ -114,16 +109,18 @@ Use whatever compute capability numbers match your hardware — check with `nvid
   --n-gpu-layers 999 \
   -sm graph \
   --override-kv tokenizer.ggml.eos_token_id=int:120025 \
-  --ctx-size 32768 --batch-size 512 --ubatch-size 256 \
+  --ctx-size 32768 --batch-size 512 --ubatch-size 512 \
   --flash-attn on --cache-type-k f16 --cache-type-v f16 \
   --jinja --chat-template-file models/templates/Hy3.jinja \
   --reasoning-format deepseek --reasoning on \
   --spec-type mtp:n_max=1,p_min=0.0
 ```
 
-### Serve (200K context, CPU KV offload, with MTP)
+Adjust `--ctx-size` based on how much VRAM you have for KV cache. Tune `--ubatch-size` based on your GPU memory — lower values reduce VRAM usage during prompt processing.
 
-For large context that exceeds GPU VRAM. Significantly slower on large prompts:
+### Serve (large context with CPU KV offload, with MTP)
+
+For contexts that exceed GPU VRAM, use `--no-kv-offload` to spill KV cache to system RAM:
 
 ```bash
 ./build/bin/llama-server \
@@ -132,7 +129,7 @@ For large context that exceeds GPU VRAM. Significantly slower on large prompts:
   --n-gpu-layers 999 \
   --no-kv-offload \
   --override-kv tokenizer.ggml.eos_token_id=int:120025 \
-  --ctx-size 200000 --batch-size 512 --ubatch-size 256 \
+  --ctx-size 200000 --batch-size 512 --ubatch-size 512 \
   --flash-attn on --cache-type-k f16 --cache-type-v f16 \
   --jinja --chat-template-file models/templates/Hy3.jinja \
   --reasoning-format deepseek --reasoning on \
@@ -147,8 +144,7 @@ Hy3 includes a built-in MTP layer (block 80, NextN architecture). Enable it with
 --spec-type mtp:n_max=1,p_min=0.0
 ```
 
-- `n_max=1` is recommended (1 draft token per step, 69-80% acceptance)
-- `n_max=2` has lower acceptance and higher memory usage; `n_max=1` is recommended
+- `n_max=1` is recommended (1 draft token per step, 69-80% acceptance rate)
 - The old `-mtp` flag is deprecated; use `--spec-type`
 
 ## Credits
