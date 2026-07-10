@@ -82,6 +82,24 @@ src/llama.cpp                  — MTP architecture gate + rope type
 common/chat.cpp                — Hy3 chat template handler + EOS fix
 ```
 
+## Chat Template
+
+Hy3 uses custom thinking tokens (`<think:opensource></think:opensource>`) and a custom EOS token (`<｜hy_eos:opensource｜>`) that require a dedicated Jinja2 template for correct chat formatting and reasoning separation.
+
+The template file is included in this repo: **[`models/templates/Hy3.jinja`](models/templates/Hy3.jinja)**
+
+After cloning, pass it to the server with `--chat-template-file`:
+
+```
+--jinja --chat-template-file models/templates/Hy3.jinja
+```
+
+The template handles:
+- System/user/assistant message formatting
+- `<think:opensource></think:opensource>` thinking token injection
+- EOS token placement
+- Compatible with `--reasoning-format deepseek` for thinking/answer separation
+
 ## Usage
 
 ### Build
