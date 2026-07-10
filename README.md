@@ -1,6 +1,8 @@
 # ik_llama-hy3
 
-Fork of [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) with support for **Tencent Hy3** (hy_v3) — a 295B parameter Mixture-of-Experts model with Multi-Token Prediction (MTP).
+Fork of [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) with support for **Tencent Hy3**
+
+> **Download the quantized model (IQ4_NL, 158 GB):** [huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF](https://huggingface.co/jackasda211233/Hy3-IQ4_NL-GGUF) (hy_v3) — a 295B parameter Mixture-of-Experts model with Multi-Token Prediction (MTP).
 
 ## What is Hy3?
 
